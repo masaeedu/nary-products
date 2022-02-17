@@ -1,0 +1,10 @@
+cradle:
+  cabal:
+  - path: "./lib"
+    component: "lib:nary-products"
+
+  - path: "./app"
+    component: "nary-products:exe:nary-products"
+
+  - path: "./app/Paths_nary-products.hs"
+    component: "nary-products:exe:nary-products"
