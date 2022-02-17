@@ -1,25 +1,22 @@
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE FunctionalDependencies #-}
 module Data.Tensor where
 
 import Data.Kind
-import Data.Functor.Compose
 import Data.Functor.Identity
-import GHC.TypeLits
-import Data.Proxy
-import Data.Functor.Const
 import Data.Bifunctor
 import Data.Biapplicative
 
 -------------------------------------------------------------------------------
+
 type HKD ks = K ks -> Type
 
--------------------------------------------------------------------------------
-type        TensorsOf :: [Type] -> [Type]
-type family TensorsOf ts = r | r -> ts where
-  TensorsOf '[] = '[]
-  TensorsOf (t ': ts) = ([t] -> t) ': TensorsOf ts
+type Tensor' k = [k] -> k
+
+newtype Tensor k = Tensor (Tensor' k)
 
 -------------------------------------------------------------------------------
+
 type        K :: [Type] -> Type
 type family K ks = t | t -> ks where
   K '[]       = Type
@@ -27,7 +24,7 @@ type family K ks = t | t -> ks where
 
 -----------------------------------------------------------------------------
 
-type Uncurry :: K ks -> HList Identity ks -> Type
+type        Uncurry :: K ks -> HList Identity ks -> Type
 data family Uncurry
 
 data instance Uncurry (f :: K '[]) xs
@@ -43,21 +40,25 @@ data instance Uncurry (f :: K '[x, y]) xs
   Uncurry2 :: { curry2 :: f x y } -> Uncurry f ('Identity x ':* 'Identity y ':* 'HN)
 
 -------------------------------------------------------------------------------
+
 infixr 4 :*
+type HList :: (k -> Type) -> [k] -> Type
 data HList f ts where
   HN :: HList f '[]
   (:*) :: f t -> HList f ts -> HList f (t ': ts)
 
+type HSum :: (k -> Type) -> [k] -> Type
 data HSum f ts where
   This  :: f t -> HSum f (t ': ts)
   There :: HSum f ts -> HSum f (t ': ts)
 
 -------------------------------------------------------------------------------
-type AppendN
-  :: HList TensorOf ks
+
+type Transpose
+  :: HList Tensor ks
   -> [HList Identity ks]
   -> HList Identity ks
-type AppendN (ts :: HList TensorOf ks) xss = ZipWithTensor ts (SequenceHList ks xss)
+type Transpose (ts :: HList Tensor ks) xss = ZipWithTensor ts (SequenceHList ks xss)
 
 type SequenceHList
   :: forall ks
@@ -65,7 +66,7 @@ type SequenceHList
   -> HList [] ks
 type family SequenceHList ks tss where
   SequenceHList '[]       _   = 'HN
-  SequenceHList (k ': ks) tss = Heads tss ':* SequenceHList ks (Tails tss) 
+  SequenceHList (k ': ks) tss = Heads tss ':* SequenceHList ks (Tails tss)
 
 type Heads :: [HList Identity (x ': xs)] -> [x]
 type family Heads ks where
@@ -77,22 +78,23 @@ type family Tails ks where
   Tails '[] = '[]
   Tails ((_ ':* ts) ': ks) = ts ': Tails ks
 
+-- | Can't actually use this because Haskell sucks, have to defunctionalize
 -- type ZipWithH
---   :: (forall x . f x -> g x -> h x)
+--   :: (forall x. f x -> g x -> h x)
 --   -> HList f xs
 --   -> HList g xs
 --   -> HList h xs
--- type family ZipWithH f xs ys where
---   ZipWithH f 'HN 'HN = 'HN
---   ZipWithH f (x ':* xs) (y ':* ys) = f x y ':* ZipWithH f xs ys
+-- type family ZipWithH k xs ys where
+--   ZipWithH k 'HN 'HN = 'HN
+--   ZipWithH k (x ':* xs) (y ':* ys) = k x y ':* ZipWithH k xs ys
 
 type ZipWithTensor
-  :: HList TensorOf xs
+  :: HList Tensor xs
   -> HList []       xs
   -> HList Identity xs
 type family ZipWithTensor ts xsx where
   ZipWithTensor 'HN 'HN = 'HN
-  ZipWithTensor ('TensorOf t ':* ts) (xs ':* xss) =
+  ZipWithTensor ('Tensor t ':* ts) (xs ':* xss) =
     'Identity (t xs) ':* ZipWithTensor ts xss
 
 type ZipWithCons
@@ -105,47 +107,28 @@ type family ZipWithCons xs ys where
   ZipWithCons ('Identity x ':* xs) (ys ':* yss) =
     (x ': ys) ':* ZipWithCons xs yss
 
--- SequenceHList [H.[Maybe,Int], H.[IO,()]] = H.[[Maybe,IO], [Int,()]]
+-------------------------------------------------------------------------------
+
+type MonoidalN :: K ks -> ((HList Identity ks -> Type) -> [HList Identity ks] -> Type) -> HList Tensor ks -> Constraint
+class MonoidalN (f :: K ks) output inputs | f -> output inputs
+  where
+  appendN :: output (Uncurry f) ts -> Uncurry f (Transpose inputs ts)
 
 -------------------------------------------------------------------------------
 
--- ks           =       [Type -> Type, Type          ]
--- ts           = HList.[[]          , Int           ]
--- TensorsOf ks = HList.[ComposeN    , HList Identity]
--- _ :: HList Identity ks
-
--- class SequenceHList tss where
---   type ResultIndices tss :: 
---   type Result        tss :: HList Identity (ResultIndices tss)
---   sequenceHList :: HList ((:$:) f) tss
---                 -> f :$: (HList (HList Identity (Map First)))
-
--- instance SequenceHList 'HN where
-
--- class SequenceHList tss where
---   sequenceHList :: MonoidalInAll f => HList f [[a, b, c], [d, e, f]] -> f [a, d] [b, e] [c, f]
- 
-newtype TensorOf k = TensorOf ([k] -> k)
-
-class MonoidalN (f :: K ks) where
-  type FieldTensors f :: HList TensorOf ks
-
-  appendN :: forall (ts :: [HList Identity ks]) . HList (Uncurry f) ts -> Uncurry f (AppendN (FieldTensors f) ts)
-
-instance MonoidalN (,) where
-  type FieldTensors (,) =
-    'TensorOf (HList Identity) ':* 'TensorOf (HList Identity) ':* 'HN
+instance MonoidalN (,) HList ('Tensor (HList Identity) ':* 'Tensor (HList Identity) ':* 'HN) where
 
   appendN HN = Uncurry2 $ (HN, HN)
   appendN (Uncurry2 f :* fs) = Uncurry2 $ biliftA2 (:*) (:*) (bimap Identity Identity f) (curry2 $ appendN fs)
 
-instance MonoidalN Maybe where
-  type FieldTensors Maybe = 'TensorOf (HList Identity) ':* 'HN
+-------------------------------------------------------------------------------
 
+instance MonoidalN Maybe HList ('Tensor (HList Identity) ':* 'HN) where
   appendN HN = Uncurry1 $ Just HN
   appendN (Uncurry1 f :* fs) = Uncurry1 $ (:*) <$> (Identity <$> f) <*> (curry1 $ appendN fs)
 
 -------------------------------------------------------------------------------
+
 class HKDProduct (p :: HKD ks) where
   type HKDFields p :: [HList Identity ks]
 
@@ -153,7 +136,10 @@ class HKDProduct (p :: HKD ks) where
   fromHList :: HList (Uncurry f) (HKDFields p) -> p f
 
 -------------------------------------------------------------------------------
-data Foo f = Foo (f Int)
+
+data Foo f = Foo
+  { foo1 :: f Int
+  }
 
 instance HKDProduct Foo where
   type HKDFields Foo = '[ 'Identity Int ':* 'HN]
@@ -162,18 +148,23 @@ instance HKDProduct Foo where
   fromHList (Uncurry1 x :* HN) = Foo x
 
 -------------------------------------------------------------------------------
-data Foo' f = Foo' (f "a" String) (f "b" Char)
 
-instance HKDProduct Foo' where
-  type HKDFields Foo' = '[
+data Bar f = Bar
+  { bar1 :: f "a" String
+  , bar2 :: f "b" Char
+  }
+
+instance HKDProduct Bar where
+  type HKDFields Bar = '[
       'Identity "a" ':* 'Identity String ':* 'HN
     , 'Identity "b" ':* 'Identity Char ':* 'HN
     ]
 
-  toHList (Foo' x y) = Uncurry2 x :* Uncurry2 y :* HN
-  fromHList (Uncurry2 x :* Uncurry2 y :* HN) = Foo' x y
+  toHList (Bar x y) = Uncurry2 x :* Uncurry2 y :* HN
+  fromHList (Uncurry2 x :* Uncurry2 y :* HN) = Bar x y
 
 -------------------------------------------------------------------------------
+
 -- type  HKDSum :: forall ks . HKD ks -> Constraint
 -- class HKDSum s where
 --   type HKDVariants s :: [HList Identity ks]
